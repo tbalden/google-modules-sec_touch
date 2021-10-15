@@ -427,9 +427,22 @@ static int sec_ts_read_internal(struct sec_ts_data *ts, u8 reg,
 
 				ret = -EIO;
 
-				input_err(true, &ts->client->dev,
-					  "%s: retry %d for 0x%02X size(%d) delay(%d)\n",
-					  __func__, retry + 1, reg, len, spi_delay_us);
+				/*
+				 * For LP idle state from AOD to normal screen-on,
+				 * T-IC needs one SPI cmds to wake-up.
+				 * Therefore, change the log level to warning
+				 * for this intended behavir.
+				 */
+				if (!completion_done(&ts->bus_resumed) &&
+					reg == SEC_TS_CMD_CHG_SYSMODE) {
+					dev_warn(&ts->client->dev,
+						"%s: wake-up touch(#%d) by 0x%02X cmd delay_us(%d)\n",
+						__func__, retry + 1, reg, spi_delay_us);
+				} else {
+					input_err(true, &ts->client->dev,
+						"%s: retry %d for 0x%02X size(%d) delay_us(%d)\n",
+						__func__, retry + 1, reg, len, spi_delay_us);
+				}
 				ts->comm_err_count++;
 
 				usleep_range(1 * 1000, 1 * 1000);
@@ -1191,6 +1204,130 @@ static int sec_ts_ptflib_reinit(struct sec_ts_data *ts)
 	}
 
 	return 0;
+}
+
+#define PTFLIB_GRIP_ENABLED_OFFSET_LSB	0x80
+#define PTFLIB_GRIP_ENABLED_OFFSET_MSB	0x00
+static int sec_ts_ptflib_grip_prescreen_enable(struct sec_ts_data *ts,
+					       int grip_prescreen_mode) {
+	u8 r_data[2] = {0x00, 0x00};
+	u8 w_data[3] = {0x00, 0x00, 0x00};
+	int result;
+
+	input_info(true, &ts->client->dev, "%s: set mode %d.\n",
+	    __func__, grip_prescreen_mode);
+
+	if (grip_prescreen_mode < GRIP_PRESCREEN_OFF ||
+	    grip_prescreen_mode > GRIP_PRESCREEN_MODE_3) {
+		input_err(true, &ts->client->dev,
+		    "%s: invalid grip_prescreen_mode value %d.\n",
+		    __func__, grip_prescreen_mode);
+		return -EINVAL;
+	}
+
+	w_data[0] = PTFLIB_GRIP_ENABLED_OFFSET_LSB;
+	w_data[1] = PTFLIB_GRIP_ENABLED_OFFSET_MSB;
+	w_data[2] = grip_prescreen_mode;
+	result = ts->sec_ts_write(ts, SEC_TS_CMD_CUSTOMLIB_WRITE_PARAM,
+	    w_data, 3);
+	if (result < 0) {
+		input_err(true, &ts->client->dev,
+		    "%s: Write grip_prescreen_mode register failed.\n",
+		    __func__);
+		return -EIO;
+	}
+
+	r_data[0] = PTFLIB_GRIP_ENABLED_OFFSET_LSB;
+	r_data[1] = PTFLIB_GRIP_ENABLED_OFFSET_MSB;
+	result = ts->sec_ts_read_customlib(ts, r_data, 2);
+	if (result < 0) {
+		input_err(true, &ts->client->dev,
+		    "%s: Read grip_prescreen_mode register failed.\n",
+		    __func__);
+		return -EIO;
+	}
+
+	if (r_data[0] != grip_prescreen_mode) {
+		input_err(true, &ts->client->dev,
+		    "%s: Configure grip_prescreen_mode register failed %d.\n",
+		    __func__, r_data[0]);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+#define PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_LSB	0x9A
+#define PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_MSB	0x00
+static int sec_ts_ptflib_grip_prescreen_timeout(struct sec_ts_data *ts,
+					        int grip_prescreen_timeout) {
+	u8 r_data[2] = {0x00, 0x00};
+	u8 w_data[4] = {0x00, 0x00, 0x00, 0x00};
+	u16 timeout;
+	int result;
+
+	input_info(true, &ts->client->dev, "%s: set timeout %d.\n",
+	    __func__, grip_prescreen_timeout);
+
+	if (grip_prescreen_timeout < GRIP_PRESCREEN_TIMEOUT_MIN ||
+	    grip_prescreen_timeout > GRIP_PRESCREEN_TIMEOUT_MAX) {
+		input_err(true, &ts->client->dev,
+		    "%s: invalid grip_prescreen_timeout value %d.\n",
+		    __func__, grip_prescreen_timeout);
+		return -EINVAL;
+	}
+
+	w_data[0] = PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_LSB;
+	w_data[1] = PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_MSB;
+	w_data[2] = grip_prescreen_timeout & 0xFF;
+	w_data[3] = (grip_prescreen_timeout >> 8) & 0xFF;
+	result = ts->sec_ts_write(ts, SEC_TS_CMD_CUSTOMLIB_WRITE_PARAM,
+	    w_data, 4);
+	if (result < 0) {
+		input_err(true, &ts->client->dev,
+		    "%s: Write grip_prescreen_timeout register failed.\n",
+		    __func__);
+		return -EIO;
+	}
+
+	r_data[0] = PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_LSB;
+	r_data[1] = PTFLIB_GRIP_PRESCREEN_TIMEOUT_OFFSET_MSB;
+	result = ts->sec_ts_read_customlib(ts, r_data, 2);
+	if (result < 0) {
+		input_err(true, &ts->client->dev,
+		    "%s: Read grip_prescreen_timeout register failed.\n",
+		    __func__);
+		return -EIO;
+	}
+
+	timeout = le16_to_cpup((uint16_t *) r_data);
+	if (timeout != grip_prescreen_timeout) {
+		input_err(true, &ts->client->dev,
+		    "%s: Configure grip_prescreen_timeout register failed %d.\n",
+		    __func__, timeout);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+#define PTFLIB_GRIP_PRESCREEN_FRAMES_OFFSET_LSB	0x9C
+#define PTFLIB_GRIP_PRESCREEN_FRAMES_OFFSET_MSB	0x00
+static int sec_ts_ptflib_get_grip_prescreen_frames(struct sec_ts_data *ts) {
+	u8 r_data[4] = {0x00, 0x00, 0x00, 0x00};
+	int result;
+
+	r_data[0] = PTFLIB_GRIP_PRESCREEN_FRAMES_OFFSET_LSB;
+	r_data[1] = PTFLIB_GRIP_PRESCREEN_FRAMES_OFFSET_MSB;
+	result = ts->sec_ts_read_customlib(ts, r_data, sizeof(r_data));
+	if (result < 0) {
+		input_err(true, &ts->client->dev,
+		    "%s: Read grip prescreen frames register failed.\n",
+		    __func__);
+		return -EIO;
+	}
+
+	return le32_to_cpup((uint32_t *) r_data);
 }
 
 static int sec_ts_ptflib_decoder(struct sec_ts_data *ts, const u16 *in_array,
@@ -2512,6 +2649,7 @@ static void sec_ts_populate_frame(struct sec_ts_data *ts,
 
 int sec_ts_enable_grip(struct sec_ts_data *ts, bool enable)
 {
+	struct sec_ts_plat_data *pdata = ts->plat_data;
 	u8 value = enable ? 1 : 0;
 	int ret;
 	int final_result = 0;
@@ -2535,8 +2673,17 @@ int sec_ts_enable_grip(struct sec_ts_data *ts, bool enable)
 		final_result = ret;
 	}
 
-	if (!enable)
+	if (!enable) {
 		sec_ts_ptflib_reinit(ts);
+		if (pdata->grip_prescreen_mode == GRIP_PRESCREEN_MODE_2) {
+			sec_ts_ptflib_grip_prescreen_timeout(ts,
+			    pdata->grip_prescreen_timeout);
+		}
+		sec_ts_ptflib_grip_prescreen_enable(ts,
+		    pdata->grip_prescreen_mode);
+	} else {
+		sec_ts_ptflib_grip_prescreen_enable(ts, GRIP_PRESCREEN_OFF);
+	}
 
 	return final_result;
 }
@@ -3680,6 +3827,8 @@ static int sec_ts_parse_dt(struct spi_device *client)
 		&pdata->encoded_enable) < 0)
 		pdata->encoded_enable = 0;
 
+	pdata->grip_prescreen_mode = GRIP_PRESCREEN_MODE_2;
+	pdata->grip_prescreen_timeout = 120;
 	pdata->is_heatmap_enabled = false;
 	pdata->encoded_frame_counter = 0;
 	pdata->encoded_skip_counter = 0;
@@ -5339,6 +5488,10 @@ static void sec_ts_suspend_work(struct work_struct *work)
 	input_info(true, &ts->client->dev, "%s: encoded skipped %d/%d\n",
 		   __func__, ts->plat_data->encoded_skip_counter,
 		   ts->plat_data->encoded_frame_counter);
+	if (ts->plat_data->grip_prescreen_mode != GRIP_PRESCREEN_OFF) {
+		input_info(true, &ts->client->dev, "%s: grip prescreened frames %d.\n",
+			__func__, sec_ts_ptflib_get_grip_prescreen_frames(ts));
+	}
 
 	mutex_lock(&ts->device_mutex);
 
@@ -5411,44 +5564,57 @@ static void sec_ts_resume_work(struct work_struct *work)
 	ret = ts->sec_ts_read(ts, SEC_TS_CMD_CHG_SYSMODE, touch_mode,
 			       sizeof(touch_mode));
 	if (ret < 0) {
+		input_err(true, &ts->client->dev,
+			"%s: read touch mode failed(%d)\n",
+			__func__, ret);
 		ret = sec_ts_system_reset(ts, RESET_MODE_HW, false, false);
 		if (ret < 0) {
 			input_err(true, &ts->client->dev,
 				  "%s: reset failed! ret %d\n", __func__, ret);
 		}
 	} else {
-		u8 power_mode = 0;
+		u8 power_mode = TO_TOUCH_MODE;
+		u8 state_manage_on = { STATE_MANAGE_ON };
 
-		input_info(true, &ts->client->dev, "%s: before resume: mode %#x, state %#x.",
-			   __func__, touch_mode[0], touch_mode[1]);
+		input_info(true, &ts->client->dev,
+			"%s: before resume: mode %#x, state %#x.\n",
+			__func__, touch_mode[0], touch_mode[1]);
 
-		if (touch_mode[0] == TOUCH_SYSTEM_MODE_LOWPOWER) {
-			ret = sec_ts_write(ts, SEC_TS_CMD_SET_POWER_MODE,
-					   &power_mode, sizeof(power_mode));
-			if (ret < 0) {
-				input_err(true, &ts->client->dev,
-					  "%s: set power mode failed(%d)\n",
-					  __func__, ret);
-			}
-			sec_ts_delay(50);
-			ret = ts->sec_ts_read(ts, SEC_TS_CMD_CHG_SYSMODE, touch_mode,
-					      sizeof(touch_mode));
-			if (ret < 0) {
-				input_err(true, &ts->client->dev,
-					  "%s: set read touch mode failed(%d)\n",
-					  __func__, ret);
-
-			} else {
-				input_info(true, &ts->client->dev,
-					   "%s: after resume: mode %#x, state %#x",
-					   __func__, touch_mode[0], touch_mode[1]);
-			}
-		} else {
+		/* Enable Normal scan. */
+		ret = sec_ts_write(ts, SEC_TS_CMD_SET_POWER_MODE,
+				   &power_mode, sizeof(power_mode));
+		if (ret < 0) {
+			input_err(true, &ts->client->dev,
+				  "%s: set power mode failed(%d)\n",
+				  __func__, ret);
 			ret = sec_ts_system_reset(ts, RESET_MODE_HW, false, false);
 			if (ret < 0) {
 				input_err(true, &ts->client->dev,
 					  "%s: reset failed! ret %d\n", __func__, ret);
 			}
+		} else {
+			/* Wait at least 50 ms for mode change. */
+			sec_ts_delay(50);
+		}
+
+		ret = ts->sec_ts_read(ts, SEC_TS_CMD_CHG_SYSMODE, touch_mode,
+				      sizeof(touch_mode));
+		if (ret < 0) {
+			input_err(true, &ts->client->dev,
+				  "%s: read touch mode failed(%d)\n",
+				  __func__, ret);
+		} else {
+			input_info(true, &ts->client->dev,
+				   "%s: after resume: mode %#x, state %#x.\n",
+				   __func__, touch_mode[0], touch_mode[1]);
+		}
+
+		ret = sec_ts_write(ts, SEC_TS_CMD_STATEMANAGE_ON, &state_manage_on,
+				sizeof(state_manage_on));
+		if (ret < 0) {
+			input_err(true, &ts->client->dev,
+				"%s: SEC_TS_CMD_STATEMANAGE_ON failed! ret %d\n",
+				__func__, ret);
 		}
 	}
 
