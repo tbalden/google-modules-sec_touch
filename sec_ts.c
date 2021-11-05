@@ -2647,42 +2647,63 @@ static void sec_ts_populate_frame(struct sec_ts_data *ts,
 	}
 }
 
-int sec_ts_enable_grip(struct sec_ts_data *ts, bool enable)
+void sec_ts_enable_ptflib(struct sec_ts_data *ts, bool enable)
 {
 	struct sec_ts_plat_data *pdata = ts->plat_data;
-	u8 value = enable ? 1 : 0;
+
+	input_info(true, &ts->client->dev,
+		"%s: enable %d.\n", __func__, enable);
+
+	if (enable) {
+		sec_ts_ptflib_reinit(ts);
+		if (pdata->grip_prescreen_mode == GRIP_PRESCREEN_MODE_2) {
+			sec_ts_ptflib_grip_prescreen_timeout(ts,
+				pdata->grip_prescreen_timeout);
+		}
+		sec_ts_ptflib_grip_prescreen_enable(ts,
+			pdata->grip_prescreen_mode);
+	} else {
+		sec_ts_ptflib_grip_prescreen_enable(ts, GRIP_PRESCREEN_OFF);
+	}
+}
+
+int sec_ts_enable_fw_grip(struct sec_ts_data *ts, bool enable)
+{
+	struct sec_ts_plat_data *pdata = ts->plat_data;
+	u8 value;
 	int ret;
 	int final_result = 0;
 
+	input_info(true, &ts->client->dev,
+		"%s: enable %d.\n", __func__, enable);
+
 	/* Set grip */
+	value = enable ? 0x1F : 0;
 	ret = ts->sec_ts_write(ts, SEC_TS_CMD_SET_GRIP_DETEC, &value, 1);
 	if (ret < 0) {
 		input_err(true, &ts->client->dev,
 			 "%s: SEC_TS_CMD_SET_GRIP_DETEC failed with ret=%d\n",
 			__func__, ret);
 		final_result = ret;
-	}
-
-	/* Set deadzone */
-	value = enable ? 1 : 0;
-	ret = ts->sec_ts_write(ts, SEC_TS_CMD_EDGE_DEADZONE, &value, 1);
-	if (ret < 0) {
-		input_err(true, &ts->client->dev,
-			 "%s: SEC_TS_CMD_EDGE_DEADZONE failed with ret=%d\n",
-			__func__, ret);
-		final_result = ret;
-	}
-
-	if (!enable) {
-		sec_ts_ptflib_reinit(ts);
-		if (pdata->grip_prescreen_mode == GRIP_PRESCREEN_MODE_2) {
-			sec_ts_ptflib_grip_prescreen_timeout(ts,
-			    pdata->grip_prescreen_timeout);
-		}
-		sec_ts_ptflib_grip_prescreen_enable(ts,
-		    pdata->grip_prescreen_mode);
 	} else {
-		sec_ts_ptflib_grip_prescreen_enable(ts, GRIP_PRESCREEN_OFF);
+		/* Configure grip */
+		if (enable) {
+			u8 mm = 10;
+			u8 px_lo = (mm * pdata->mm2px) & 0xFF;
+			u8 px_hi = ((mm * pdata->mm2px) >> 8) & 0xFF;
+			u8 long_press_zone[10] = {0x02, 0x00,	/* long press reject zone type */
+						px_hi, px_lo,	/* left edge */
+						0x00, 0x00,	/* top edge */
+						px_hi, px_lo,	/* right edge */
+						0x00, 0x00};	/* bottom edge */
+			ret = ts->sec_ts_write(ts, SEC_TS_CMD_LONGPRESS_DROP_AREA,
+					long_press_zone, sizeof(long_press_zone));
+			if (ret < 0) {
+				input_err(true, &ts->client->dev,
+					"%s: SEC_TS_CMD_LONGPRESS_DROP_AREA failed with ret=%d\n",
+					__func__, ret);
+			}
+		}
 	}
 
 	return final_result;
@@ -2693,11 +2714,11 @@ static void sec_ts_offload_set_running(struct sec_ts_data *ts, bool running)
 	if (ts->offload.offload_running != running) {
 		ts->offload.offload_running = running;
 		if (running) {
-			pr_info("%s: disabling FW grip.\n", __func__);
-			sec_ts_enable_grip(ts, false);
+			sec_ts_enable_fw_grip(ts, false);
+			sec_ts_enable_ptflib(ts, true);
 		} else {
-			pr_info("%s: enabling FW grip.\n", __func__);
-			sec_ts_enable_grip(ts, true);
+			sec_ts_enable_fw_grip(ts, true);
+			sec_ts_enable_ptflib(ts, false);
 		}
 	}
 }
@@ -5473,6 +5494,8 @@ static void sec_ts_suspend_work(struct work_struct *work)
 		return;
 	}
 
+	sec_ts_enable_fw_grip(ts, true);
+
 	/* Stop T-IC */
 	sec_ts_fix_tmode(ts, TOUCH_SYSTEM_MODE_SLEEP, TOUCH_MODE_STATE_STOP);
 	ret = sec_ts_write(ts, SEC_TS_CMD_CLEAR_EVENT_STACK, NULL, 0);
@@ -5604,8 +5627,6 @@ static void sec_ts_resume_work(struct work_struct *work)
 		sec_ts_set_custom_library(ts);
 #endif
 
-	sec_ts_set_grip_type(ts, ONLY_EDGE_HANDLER);
-
 	ts->plat_data->is_heatmap_enabled = false;
 	ts->plat_data->encoded_frame_counter = 0;
 	ts->plat_data->encoded_skip_counter = 0;
@@ -5668,8 +5689,10 @@ static void sec_ts_resume_work(struct work_struct *work)
 		input_info(true, &ts->client->dev,
 			   "applying touch_offload settings.\n");
 
-		if (!ts->offload.config.filter_grip)
-			sec_ts_enable_grip(ts, false);
+		if (!ts->offload.config.filter_grip) {
+			sec_ts_enable_fw_grip(ts, false);
+			sec_ts_enable_ptflib(ts, true);
+		}
 	}
 #endif
 
