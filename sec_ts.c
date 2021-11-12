@@ -2728,37 +2728,6 @@ static void sec_ts_handle_fod_event(struct sec_ts_data *ts,
 
 	input_info(true, &ts->client->dev,
 		   "STATUS: FoD: %s, X,Y: %d, %d\n", p_fod->status ? "ON" : "OFF", x, y);
-
-	if (p_fod->status == false) {
-		mutex_lock(&ts->eventlock);
-		input_mt_slot(ts->input_dev, 0);
-		input_report_key(ts->input_dev, BTN_TOUCH, 1);
-		input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 1);
-		input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);
-		input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);
-		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, 140);
-		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, 140);
-#ifndef SKIP_PRESSURE
-		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 1);
-#endif
-		input_sync(ts->input_dev);
-
-		/* Report MT_TOOL_PALM for canceling the touch event. */
-		input_mt_slot(ts->input_dev, 0);
-		input_report_key(ts->input_dev, BTN_TOUCH, 1);
-		input_mt_report_slot_state(ts->input_dev, MT_TOOL_PALM, 1);
-		input_sync(ts->input_dev);
-
-		/* Release slot 0. */
-		input_mt_slot(ts->input_dev, 0);
-		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 0);
-		input_mt_report_slot_state(ts->input_dev,
-					   MT_TOOL_FINGER, 0);
-		input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, -1);
-		input_report_key(ts->input_dev, BTN_TOUCH, 0);
-		input_sync(ts->input_dev);
-		mutex_unlock(&ts->eventlock);
-	}
 }
 
 static void sec_ts_read_vendor_event(struct sec_ts_data *ts,
