@@ -1,4 +1,5 @@
 ccflags-y += -I$(srctree)/../gs/google-modules/display
+ccflags-y += -I$(srctree)/../gs/google-modules/display/include/uapi
 ccflags-y += -I$(srctree)/../gs/google-modules/touch/common
 ccflags-y += -I$(srctree)/../gs/google-modules/touch/common/include
 
