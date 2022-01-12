@@ -8,6 +8,16 @@
 
 load("//build/kernel/kleaf:kernel.bzl", "kernel_module")
 
+filegroup(
+    name = "sec.kconfig",
+    srcs = glob([
+        "Kconfig",
+    ]),
+    visibility = [
+        "//gs/google-modules/soc-modules:__pkg__",
+    ],
+)
+
 kernel_module(
     name = "sec.slider",
     srcs = glob([

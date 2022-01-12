@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+
 ccflags-y += -I$(srctree)/../gs/google-modules/display
 ccflags-y += -I$(srctree)/../gs/google-modules/display/include/uapi
 ccflags-y += -I$(srctree)/../gs/google-modules/touch/common
