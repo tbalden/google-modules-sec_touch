@@ -2839,7 +2839,7 @@ static void sec_ts_offload_set_running(struct sec_ts_data *ts, bool running)
 {
 	if (ts->offload.offload_running != running) {
 		ts->offload.offload_running = running;
-		if (running && ts->offload.config.filter_grip == 1) {
+		if (running && ts->offload.config.filter_grip) {
 			sec_ts_enable_fw_grip(ts, false);
 			sec_ts_enable_ptflib(ts, true);
 		} else {
@@ -5839,7 +5839,7 @@ static void sec_ts_resume_work(struct work_struct *work)
 		input_info(true, &ts->client->dev,
 			   "applying touch_offload settings.\n");
 
-		if (!ts->offload.config.filter_grip) {
+		if (ts->offload.config.filter_grip) {
 			sec_ts_enable_fw_grip(ts, false);
 			sec_ts_enable_ptflib(ts, true);
 		}
