@@ -24,17 +24,18 @@
 #include <linux/spi/spi.h>
 #include <linux/input.h>
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
-#include <linux/input/heatmap.h>
+#include <heatmap.h>
 #endif
 #include <linux/input/mt.h>
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_OFFLOAD)
-#include <linux/input/touch_offload.h>
+#include <touch_offload.h>
 #endif
 #include "sec_cmd.h"
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
+#include <linux/kfifo.h>
 #include <linux/module.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_device.h>
@@ -60,7 +61,7 @@
 #endif
 
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN)
-#include <linux/input/touch_bus_negotiator.h>
+#include <touch_bus_negotiator.h>
 #endif
 
 #define SEC_TS_NAME		"sec_ts"
@@ -558,6 +559,13 @@ enum {
 						 **/
 };
 
+enum RESET_MODE {
+	RESET_MODE_NA		= 0x00,
+	RESET_MODE_SW		= 0x01,
+	RESET_MODE_HW		= 0x02,
+	RESET_MODE_AUTO		= (RESET_MODE_SW | RESET_MODE_HW),
+};
+
 enum CUSTOMLIB_EVENT_TYPE {
 	CUSTOMLIB_EVENT_TYPE_SPAY			= 0x04,
 	CUSTOMLIB_EVENT_TYPE_PRESSURE_TOUCHED		= 0x05,
@@ -579,7 +587,8 @@ enum {
 	SEC_TS_BUS_REF_INPUT_DEV	= 0x10,
 	SEC_TS_BUS_REF_READ_INFO	= 0x20,
 	SEC_TS_BUS_REF_SYSFS		= 0x40,
-	SEC_TS_BUS_REF_FORCE_ACTIVE	= 0x80
+	SEC_TS_BUS_REF_FORCE_ACTIVE	= 0x80,
+	SEC_TS_BUS_REF_BUGREPORT	= 0x100
 };
 
 enum {
@@ -650,6 +659,23 @@ enum {
 	HEATMAP_FULL	= 2
 };
 
+enum {
+	GRIP_PRESCREEN_OFF	= 0,
+	GRIP_PRESCREEN_MODE_1	= 1,
+	GRIP_PRESCREEN_MODE_2	= 2,
+	GRIP_PRESCREEN_MODE_3	= 3
+};
+
+enum {
+	GRIP_PRESCREEN_TIMEOUT_MIN	= 0,
+	GRIP_PRESCREEN_TIMEOUT_MAX	= 480
+};
+
+enum {
+	ENCODED_ENABLE_OFF	= 0,
+	ENCODED_ENABLE_ON	= 1
+};
+
 /* Motion filter finite state machine (FSM) states
  * SEC_TS_MF_FILTERED        - default coordinate filtering
  * SEC_TS_MF_UNFILTERED      - unfiltered single-touch coordinates
@@ -674,6 +700,13 @@ struct heatmap_report {
 	uint8_t size_y;
 	/* data is in BE order; order should be enforced after data is read */
 	strength_t data[LOCAL_HEATMAP_WIDTH * LOCAL_HEATMAP_HEIGHT];
+} __packed;
+
+struct heatmap_data {
+	ktime_t timestamp;
+	uint16_t size_x;
+	uint16_t size_y;
+	uint8_t *data;
 } __packed;
 #endif
 
@@ -749,10 +782,31 @@ struct sec_ts_gesture_status {
 /* status id for sec_ts event */
 #define SEC_TS_EVENT_STATUS_ID_HOPPING		0x33
 #define SEC_TS_EVENT_STATUS_ID_REPORT_RATE	0x34
+#define SEC_TS_EVENT_STATUS_ID_VSYNC		0x35
 #define SEC_TS_EVENT_STATUS_ID_NOISE		0x64
 #define SEC_TS_EVENT_STATUS_ID_WLC		0x66
 #define SEC_TS_EVENT_STATUS_ID_GRIP		0x69
+#define SEC_TS_EVENT_STATUS_ID_FOD		0x6B
 #define SEC_TS_EVENT_STATUS_ID_PALM		0x70
+
+/* 8 byte */
+struct sec_ts_fod_event {
+	struct {
+		u8 type;
+		u8 id;
+		u8 status;
+		u8 x_b7_b0;
+		union {
+			struct {
+				u8 y_b11_b8:4;
+				u8 x_b11_b8:4;
+			};
+			u8 x_y_b11_b8;
+		};
+		u8 y_b7_b0;
+		u8 reserved[2];
+	};
+} __packed;
 
 /* 8 byte */
 struct sec_ts_event_status {
@@ -817,12 +871,16 @@ struct sec_ts_coordinate {
 	u8 glove_flag;
 	u8 touch_height;
 	u16 mcount;
-	u8 major;
-	u8 minor;
+	u16 major;
+	u16 minor;
 	bool palm;
-	int palm_count;
 	u8 left_event;
 	bool grip;
+	/* for debug purpose. */
+	u16 x_pressed;	/* x coord on first down timing. */
+	u16 y_pressed;	/* y coord on first down timing. */
+	ktime_t ktime_pressed;
+	ktime_t ktime_released;
 };
 
 struct sec_ts_data {
@@ -852,11 +910,7 @@ struct sec_ts_data {
 			    * in CLOCK_MONOTONIC
 			    **/
 
-	struct timespec64 time_pressed[MAX_SUPPORT_TOUCH_COUNT +
-					MAX_SUPPORT_HOVER_COUNT];
-	struct timespec64 time_released[MAX_SUPPORT_TOUCH_COUNT +
-					MAX_SUPPORT_HOVER_COUNT];
-	long time_longest;
+	s64 longest_duration; /* ms unit */
 
 	u8 lowpower_mode;
 	u8 lowpower_status;
@@ -871,7 +925,7 @@ struct sec_ts_data {
 	struct completion bus_resumed;
 	struct completion boot_completed;
 
-	int touch_count;
+	unsigned int touch_count;	/* active touch slot(s). */
 	int tx_count;
 	int rx_count;
 	int io_burstmax;
@@ -910,9 +964,14 @@ struct sec_ts_data {
 	u8 print_format;
 	u8 ms_frame_type;
 	u8 ss_frame_type;
+	int heatmap_dump;
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
 	struct v4l2_heatmap v4l2;
+	struct heatmap_data mutual_strength_heatmap;
 	strength_t *heatmap_buff;
+	strength_t *encoded_buff;
+	bool heatmap_init_done;
+	bool v4l2_mutual_strength_updated;
 #endif
 
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_OFFLOAD)
@@ -989,16 +1048,25 @@ struct sec_ts_data {
 	int tune_fix_ver;
 	bool external_factory;
 
+	int report_rate;
+	int vsync;
 	int wet_mode;
 
 	unsigned char ito_test[4];		/* ito panel tx/rx chanel */
 	unsigned char check_multi;
 	unsigned int multi_count;		/* multi touch count */
+	unsigned int palm_count;
 	unsigned int wet_count;			/* wet mode count */
 	unsigned int dive_count;		/* dive mode count */
-	unsigned int comm_err_count;	/* comm error count */
-	unsigned int io_err_count;	/* io error count */
-	unsigned int checksum_result;	/* checksum result */
+	unsigned int comm_err_count;		/* comm error count */
+	unsigned int io_err_count;		/* io error count */
+	unsigned int hw_reset_count;
+	/*
+	 * accumulated count of pressed
+	 * touch from resume to suspend.
+	 */
+	unsigned int pressed_count;
+	unsigned int checksum_result;		/* checksum result */
 	unsigned char module_id[4];
 	unsigned int all_finger_count;
 	unsigned int all_force_count;
@@ -1016,7 +1084,14 @@ struct sec_ts_data {
 	short pressure_right;
 	u8 pressure_user_level;
 #endif
-	int debug;
+	union {
+		u32 debug;
+		struct {
+		u32 debug_events : 1;
+		u32 debug_status : 1;
+		u32 debug_reserved : 30;
+		};
+	};
 
 	int fs_postcal_mean;
 
@@ -1047,7 +1122,7 @@ struct sec_ts_data {
 	bool grips_leaved_once;
 
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN)
-	struct tbn_context *tbn;
+	u32 tbn_register_mask;
 #endif
 
 	struct power_supply *wireless_psy;
@@ -1055,8 +1130,11 @@ struct sec_ts_data {
 	struct notifier_block psy_nb;
 	bool wlc_online;
 	bool usb_present;
-	bool keep_wlc_mode;
-	ktime_t usb_changed_timestamp;
+	bool force_wlc;
+	ktime_t usb_changed_ktime;
+	ktime_t wlc_changed_ktime;
+
+	ktime_t bugreport_ktime_start;
 
 	int (*sec_ts_write)(struct sec_ts_data *ts, u8 reg,
 				u8 *data, int len);
@@ -1086,6 +1164,8 @@ struct sec_ts_data {
 };
 
 struct sec_ts_plat_data {
+	int fod_x;
+	int fod_y;
 	int max_x;
 	int max_y;
 	unsigned int irq_gpio;
@@ -1095,6 +1175,12 @@ struct sec_ts_plat_data {
 	int bringup;
 	int mis_cal_check;
 	int heatmap_mode;
+	int grip_prescreen_mode;
+	int grip_prescreen_timeout;
+	bool is_heatmap_enabled;
+	int encoded_enable;
+	int encoded_frame_counter;
+	int encoded_skip_counter;
 #ifdef PAT_CONTROL
 	int pat_function;
 	int afe_base;
@@ -1119,7 +1205,7 @@ struct sec_ts_plat_data {
 	void (*enable_sync)(bool on);
 	int tsp_icid;
 	int tsp_id;
-	int tsp_vsync;
+	int vsync_gpio;
 	int switch_gpio;
 	int reset_gpio;
 
@@ -1130,13 +1216,21 @@ struct sec_ts_plat_data {
 
 	struct drm_panel *panel;
 	u32 initial_panel_index;
+	u32 offload_id;
+
+	/* convert mm to pixel for major and minor */
+	u8 mm2px;
 };
 
+void sec_ts_debug_dump(struct sec_ts_data *ts);
 int sec_ts_stop_device(struct sec_ts_data *ts);
 int sec_ts_start_device(struct sec_ts_data *ts);
-int sec_ts_hw_reset(struct sec_ts_data *ts);
-int sec_ts_sw_reset(struct sec_ts_data *ts);
-int sec_ts_system_reset(struct sec_ts_data *ts);
+int sec_ts_hw_reset(struct sec_ts_data *ts, bool wait_for_done);
+int sec_ts_sw_reset(struct sec_ts_data *ts, bool wait_for_done);
+int sec_ts_system_reset(struct sec_ts_data *ts,
+			enum RESET_MODE mode,
+			bool wait_for_done,
+			bool sense_on);
 int sec_ts_set_lowpowermode(struct sec_ts_data *ts, u8 mode);
 int sec_ts_firmware_update_on_probe(struct sec_ts_data *ts, bool force_update);
 int sec_ts_firmware_update_on_hidden_menu(struct sec_ts_data *ts,

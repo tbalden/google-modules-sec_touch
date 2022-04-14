@@ -246,7 +246,7 @@ static void set_palm_detection_enable(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[4] = { 0 };
 	u8 para = 0x0;
-	u8 ret = 0;
+	int ret;
 
 	input_info(true, &ts->client->dev,
 		"%s: %d\n", __func__, sec->cmd_param[0]);
@@ -292,7 +292,7 @@ static void set_grip_detection_enable(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[4] = { 0 };
 	u8 para = 0x0;
-	u8 ret = 0;
+	int ret;
 
 	input_info(true, &ts->client->dev,
 		"%s: %d\n", __func__, sec->cmd_param[0]);
@@ -338,7 +338,7 @@ static void set_wet_mode_enable(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[4] = { 0 };
 	u8 para = 0x0;
-	u8 ret = 0;
+	int ret;
 
 	input_info(true, &ts->client->dev,
 		"%s: %d\n", __func__, sec->cmd_param[0]);
@@ -384,7 +384,7 @@ static void set_noise_mode_enable(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[4] = { 0 };
 	u8 para = 0x0;
-	u8 ret = 0;
+	int ret;
 
 	input_info(true, &ts->client->dev,
 		"%s: %d\n", __func__, sec->cmd_param[0]);
@@ -430,7 +430,7 @@ static void set_continuous_report_enable(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[4] = { 0 };
 	u8 para = 0x0;
-	u8 ret = 0;
+	int ret;
 
 	input_info(true, &ts->client->dev,
 		"%s: %d\n", __func__, sec->cmd_param[0]);
@@ -519,7 +519,7 @@ static ssize_t scrub_pos_show(struct device *dev,
 			"%s: scrub_id: %d\n", __func__, ts->scrub_id);
 #else
 	input_info(true, &ts->client->dev,
-			"%s: scrub_id: %d, X:%d, Y:%d\n", __func__,
+			"%s: scrub_id: %d, X: %d, Y: %d\n", __func__,
 			ts->scrub_id, ts->scrub_x, ts->scrub_y);
 #endif
 	snprintf(buff, sizeof(buff), "%d %d %d",
@@ -730,7 +730,7 @@ static ssize_t holding_time_store(struct device *dev,
 	struct sec_cmd_data *sec = dev_get_drvdata(dev);
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 
-	ts->time_longest = 0;
+	ts->longest_duration = 0;
 
 	input_info(true, &ts->client->dev, "%s: clear\n", __func__);
 
@@ -743,10 +743,10 @@ static ssize_t holding_time_show(struct device *dev,
 	struct sec_cmd_data *sec = dev_get_drvdata(dev);
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 
-	input_info(true, &ts->client->dev, "%s: %ld\n", __func__,
-		ts->time_longest);
+	input_info(true, &ts->client->dev, "%s: %lld ms\n",
+		__func__, ts->longest_duration);
 
-	return snprintf(buf, SEC_CMD_BUF_SIZE, "%ld", ts->time_longest);
+	return snprintf(buf, SEC_CMD_BUF_SIZE, "%lld ms", ts->longest_duration);
 }
 
 static ssize_t all_touch_count_show(struct device *dev,
@@ -756,7 +756,7 @@ static ssize_t all_touch_count_show(struct device *dev,
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 
 	input_info(true, &ts->client->dev,
-		"%s: touch:%d, force:%d, aod:%d, spay:%d\n", __func__,
+		"%s: touch: %d, force: %d, aod: %d, spay: %d\n", __func__,
 		ts->all_finger_count, ts->all_force_count,
 		ts->all_aod_tap_count, ts->all_spay_count);
 
@@ -788,7 +788,7 @@ static ssize_t z_value_show(struct device *dev,
 	struct sec_cmd_data *sec = dev_get_drvdata(dev);
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 
-	input_info(true, &ts->client->dev, "%s: max:%d, min:%d, avg:%d\n",
+	input_info(true, &ts->client->dev, "%s: max: %d, min: %d, avg: %d\n",
 		   __func__, ts->max_z_value, ts->min_z_value, ts->sum_z_value);
 
 	if (ts->all_finger_count)
@@ -1052,6 +1052,204 @@ static ssize_t heatmap_mode_show(struct device *dev,
 #endif
 }
 
+/* sysfs file node to store grip prescreen mode
+ * "echo cmd > grip_prescreen_mode" to change
+ * Possible commands:
+ * 0 = GRIP_PRESCREEN_OFF
+ * 1 = GRIP_PRESCREEN_MODE_1
+ * 2 = GRIP_PRESCREEN_MODE_2
+ * 3 = GRIP_PRESCREEN_MODE_3
+ */
+static ssize_t grip_prescreen_mode_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	struct sec_ts_plat_data *pdata = ts->plat_data;
+	int result;
+	int val;
+
+	result = kstrtoint(buf, 10, &val);
+	if (result < 0 || val < GRIP_PRESCREEN_OFF ||
+	    val > GRIP_PRESCREEN_MODE_3) {
+		input_err(true, &ts->client->dev,
+			"%s: Invalid input.\n", __func__);
+		return -EINVAL;
+	}
+
+	pdata->grip_prescreen_mode = val;
+
+	return count;
+}
+
+static ssize_t grip_prescreen_mode_show(struct device *dev,
+				        struct device_attribute *attr,
+				        char *buf)
+{
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	const struct sec_ts_plat_data *pdata = ts->plat_data;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 pdata->grip_prescreen_mode);
+}
+
+/* sysfs file node to store grip prescreen timeout
+ * "echo timeout > grip_prescreen_timeout" to change
+ * Possible timeout range:
+ *   GRIP_PRESCREEN_TIMEOUT_MIN ~ GRIP_PRESCREEN_TIMEOUT_MAX
+ */
+static ssize_t grip_prescreen_timeout_store(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	struct sec_ts_plat_data *pdata = ts->plat_data;
+	int result;
+	int val;
+
+	result = kstrtoint(buf, 10, &val);
+	if (result < 0 || val < GRIP_PRESCREEN_TIMEOUT_MIN ||
+	    val > GRIP_PRESCREEN_TIMEOUT_MAX) {
+		input_err(true, &ts->client->dev,
+			"%s: Invalid input.\n", __func__);
+		return -EINVAL;
+	}
+
+	pdata->grip_prescreen_timeout = val;
+
+	return count;
+}
+
+static ssize_t grip_prescreen_timeout_show(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	const struct sec_ts_plat_data *pdata = ts->plat_data;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 pdata->grip_prescreen_timeout);
+}
+
+/* sysfs file node to store encoded_enable control
+ * "echo cmd > encoded_enable" to change
+ * Possible commands:
+ * 0 = ENCODED_ENABLE_OFF
+ * 1 = ENCODED_ENABLE_ON
+ */
+static ssize_t encoded_enable_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	struct sec_ts_plat_data *pdata = ts->plat_data;
+	int result;
+	int val;
+
+	result = kstrtoint(buf, 10, &val);
+	if (result < 0 || val < ENCODED_ENABLE_OFF ||
+	    val > ENCODED_ENABLE_ON) {
+		input_err(true, &ts->client->dev,
+			"%s: Invalid input.\n", __func__);
+		return -EINVAL;
+	}
+	pdata->encoded_enable = val;
+
+	return count;
+#else
+	return 0;
+#endif
+}
+
+static ssize_t encoded_enable_show(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	const struct sec_ts_plat_data *pdata = ts->plat_data;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", pdata->encoded_enable);
+#else
+	return scnprintf(buf, PAGE_SIZE, "N/A\n");
+#endif
+}
+
+
+/* sysfs file node to dump heatmap
+ * "echo cmd > heatmap_dump" to change
+ * Possible commands:
+ * 0 = disable
+ * 1 = enable
+ */
+static ssize_t heatmap_dump_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	int result;
+	int val;
+
+	result = kstrtoint(buf, 10, &val);
+	if (result < 0 || val < 0 || val > 1) {
+		input_err(true, &ts->client->dev,
+			"%s: Invalid input.\n", __func__);
+		return -EINVAL;
+	}
+	ts->heatmap_dump = val;
+	return count;
+#else
+	return 0;
+#endif
+}
+
+static ssize_t heatmap_dump_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_HEATMAP)
+	struct sec_cmd_data *sec = dev_get_drvdata(dev);
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	struct sec_ts_plat_data *pdata = ts->plat_data;
+	int x, y, max_x, max_y, index = 0;
+
+	index += scnprintf(buf + index, PAGE_SIZE - index,
+			"heatmap dump(mode %d) %s\n",
+			pdata->heatmap_mode,
+			(ts->heatmap_dump) ? "ENABLE" : "DISABLE");
+
+	if (!ts->heatmap_dump)
+		return index;
+
+	max_x = ts->tx_count;
+	max_y = ts->rx_count;
+
+	for (y = 0 ; y < max_y ; y++) {
+		for (x = 0 ; x < max_x ; x++) {
+			index += scnprintf(buf + index,
+				PAGE_SIZE - index,
+				" %3d,",
+				ts->v4l2.frame[y * max_x  + x]);
+			if (x == max_x - 1)
+				index += scnprintf(buf + index,
+					PAGE_SIZE - index, "\n");
+		}
+	}
+
+	return index;
+#else
+	return scnprintf(buf, PAGE_SIZE, "N/A\n");
+#endif
+}
+
 static ssize_t fw_version_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
@@ -1136,7 +1334,7 @@ static ssize_t status_show(struct device *dev,
 		goto out;
 	}
 	written += scnprintf(buf + written, PAGE_SIZE - written,
-			     "BOOT STATUS: 0x%02X\n", data[0]);
+			     "Boot status: %#x\n", data[0]);
 
 	memset(data, 0x0, 4);
 	ret = ts->sec_ts_read(ts, SEC_TS_READ_TS_STATUS, data, 4);
@@ -1147,7 +1345,7 @@ static ssize_t status_show(struct device *dev,
 		goto out;
 	}
 	written += scnprintf(buf + written, PAGE_SIZE - written,
-			     "TOUCH STATUS: 0x%02X, 0x%02X, 0x%02X, 0x%02X\n",
+			     "Touch status: %#x, %#x, %#x, %#x\n",
 			     data[0], data[1], data[2], data[3]);
 
 	memset(data, 0x0, 2);
@@ -1159,8 +1357,17 @@ static ssize_t status_show(struct device *dev,
 		goto out;
 	}
 	written += scnprintf(buf + written, PAGE_SIZE - written,
-			     "Functions: 0x%02X, 0x%02X\n", data[0], data[1]);
-
+			     "Functions: %#x, %#x\n", data[0], data[1]);
+	written += scnprintf(buf + written, PAGE_SIZE - written,
+			     "Charger mode: %#x\n", ts->charger_mode);
+	written += scnprintf(buf + written, PAGE_SIZE - written,
+			     "Wet mode: %d\n", ts->wet_mode);
+	written += scnprintf(buf + written, PAGE_SIZE - written,
+			     "Fingers#: %d\n", ts->touch_count);
+	written += scnprintf(buf + written, PAGE_SIZE - written,
+			     "Report rate: %d\n", ts->report_rate);
+	written += scnprintf(buf + written, PAGE_SIZE - written,
+			     "Vsync: %d\n", ts->vsync);
 out:
 
 	sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, false);
@@ -1182,6 +1389,10 @@ static DEVICE_ATTR_RW(pressure_enable);
 static DEVICE_ATTR_RO(get_lp_dump);
 static DEVICE_ATTR_RO(force_recal_count);
 static DEVICE_ATTR_RW(heatmap_mode);
+static DEVICE_ATTR_RW(grip_prescreen_mode);
+static DEVICE_ATTR_RW(grip_prescreen_timeout);
+static DEVICE_ATTR_RW(encoded_enable);
+static DEVICE_ATTR_RW(heatmap_dump);
 static DEVICE_ATTR_RO(fw_version);
 static DEVICE_ATTR_RO(status);
 
@@ -1203,6 +1414,10 @@ static struct attribute *cmd_attributes[] = {
 	&dev_attr_get_lp_dump.attr,
 	&dev_attr_force_recal_count.attr,
 	&dev_attr_heatmap_mode.attr,
+	&dev_attr_grip_prescreen_mode.attr,
+	&dev_attr_grip_prescreen_timeout.attr,
+	&dev_attr_encoded_enable.attr,
+	&dev_attr_heatmap_dump.attr,
 	&dev_attr_fw_version.attr,
 	&dev_attr_status.attr,
 	NULL,
@@ -4622,7 +4837,7 @@ int get_tsp_nvm_data(struct sec_ts_data *ts, u8 offset)
 	}
 
 	input_info(true, &ts->client->dev,
-		   "%s: offset:%u  data:%02X\n", __func__, offset, buff[0]);
+		   "%s: offset: %u data: %02X\n", __func__, offset, buff[0]);
 
 out_nvm:
 	ret = ts->sec_ts_write(ts, SEC_TS_CMD_SENSE_ON, NULL, 0);
@@ -4646,7 +4861,7 @@ int get_tsp_nvm_data_by_size(struct sec_ts_data *ts, u8 offset,
 		return -ENOMEM;
 
 	input_info(true, &ts->client->dev,
-		   "%s: offset:%u, length:%d, size:%d\n",
+		   "%s: offset: %u, length: %d, size: %d\n",
 		   __func__, offset, length, sizeof(data));
 
 	/* SENSE OFF -> CELAR EVENT STACK -> READ NV -> SENSE ON */
@@ -4876,12 +5091,12 @@ static void get_tsp_test_result(void *device_data)
 	result = (struct sec_ts_test_result *)buff;
 
 	input_info(true, &ts->client->dev,
-			 "%s: [0x%X][0x%X] M:%d, M:%d, A:%d, A:%d\n",
+			 "%s: [0x%X][0x%X] M: %d, M: %d, A: %d, A: %d\n",
 			__func__, *result->data, buff[0],
 			result->module_result, result->module_count,
 			result->assy_result, result->assy_count);
 
-	snprintf(buff, sizeof(buff), "M:%s, M:%d, A:%s, A:%d",
+	snprintf(buff, sizeof(buff), "M: %s, M: %d, A: %s, A: %d",
 			result->module_result == 0 ? "NONE" :
 			result->module_result == 1 ? "FAIL" : "PASS",
 			result->module_count,
@@ -6243,7 +6458,7 @@ static void run_force_pressure_calibration(void *device_data)
 	ts->pressure_cal_base = get_tsp_nvm_data(ts,
 				SEC_TS_NVM_OFFSET_PRESSURE_BASE_CAL_COUNT);
 
-	input_info(true, &ts->client->dev, "%s: count:%d\n",
+	input_info(true, &ts->client->dev, "%s: count: %d\n",
 		   __func__, ts->pressure_cal_base);
 
 	enable_irq(ts->client->irq);
@@ -6658,7 +6873,7 @@ static void set_pressure_strength(void *device_data)
 				SEC_TS_NVM_OFFSET_PRESSURE_DELTA_CAL_COUNT);
 
 	input_info(true, &ts->client->dev,
-		   "%s: count:%d\n", __func__, ts->pressure_cal_delta);
+		   "%s: count: %d\n", __func__, ts->pressure_cal_delta);
 
 	sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, false);
 	return;
@@ -7395,7 +7610,7 @@ static void set_aod_rect(void *device_data)
 
 	sec_cmd_set_default_result(sec);
 
-	input_info(true, &ts->client->dev, "%s: w:%d, h:%d, x:%d, y:%d\n",
+	input_info(true, &ts->client->dev, "%s: w: %d, h: %d, x: %d, y: %d\n",
 			__func__, sec->cmd_param[0], sec->cmd_param[1],
 			sec->cmd_param[2], sec->cmd_param[3]);
 
@@ -7469,7 +7684,7 @@ static void get_aod_rect(void *device_data)
 		rect_data[i] = (data[i * 2 + 1] & 0xFF) << 8 |
 					(data[i * 2] & 0xFF);
 
-	input_info(true, &ts->client->dev, "%s: w:%d, h:%d, x:%d, y:%d\n",
+	input_info(true, &ts->client->dev, "%s: w: %d, h: %d, x: %d, y: %d\n",
 			__func__,
 			rect_data[0], rect_data[1], rect_data[2], rect_data[3]);
 
@@ -7874,12 +8089,13 @@ static void force_touch_active(void *device_data)
 	struct sec_cmd_data *sec = (struct sec_cmd_data *)device_data;
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	int active, ret;
+	u16 bus_ref = SEC_TS_BUS_REF_FORCE_ACTIVE;
 
 	sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_SYSFS, true);
 
 	sec_cmd_set_default_result(sec);
 
-	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > 1) {
+	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > 2) {
 		sec_cmd_set_cmd_result(sec, "NG", 2);
 		sec_cmd_set_cmd_exit(sec);
 		sec->cmd_state = SEC_CMD_STATUS_FAIL;
@@ -7888,15 +8104,29 @@ static void force_touch_active(void *device_data)
 		return;
 	}
 
-	active = sec->cmd_param[0];
+	/* Specific case for bugreport. */
+	if (sec->cmd_param[0] == 2) {
+		bus_ref = SEC_TS_BUS_REF_BUGREPORT;
+		active = (sec->cmd_param[1]) ? true : false;
+		if (active) {
+			sec_ts_debug_dump(ts);
+			ts->bugreport_ktime_start = ktime_get();
+		} else {
+			ts->bugreport_ktime_start = 0;
+		}
+	} else {
+		active = sec->cmd_param[0];
+	}
 	input_info(true, &ts->client->dev,
-		"%s: %s\n", __func__, active ? "enable" : "disable");
+		   "%s: %s %#x\n", __func__, active ? "enable" : "disable",
+		   bus_ref);
+
 	if (active)
 		pm_stay_awake(&ts->client->dev);
 	else
 		pm_relax(&ts->client->dev);
 
-	ret = sec_ts_set_bus_ref(ts, SEC_TS_BUS_REF_FORCE_ACTIVE, active);
+	ret = sec_ts_set_bus_ref(ts, bus_ref, active);
 	if (ret == 0) {
 		sec_cmd_set_cmd_result(sec, "OK", 2);
 		sec->cmd_state = SEC_CMD_STATUS_OK;
@@ -8250,9 +8480,18 @@ static void set_touch_mode(void *device_data)
 		break;
 	case 7:
 		input_info(true, &ts->client->dev,
-			"%s: param = %d, do touch system reset\n",
-			__func__, sec->cmd_param[0]);
-		sec_ts_system_reset(ts);
+			"%s: param = %d %d, do touch system reset\n",
+			__func__, sec->cmd_param[0], sec->cmd_param[1]);
+		switch (sec->cmd_param[1]) {
+		case RESET_MODE_SW:
+			sec_ts_system_reset(ts, RESET_MODE_SW, true, true);
+			break;
+		case RESET_MODE_HW:
+			sec_ts_system_reset(ts, RESET_MODE_HW, true, true);
+			break;
+		default:
+			sec_ts_system_reset(ts, RESET_MODE_AUTO, true, true);
+		}
 		break;
 	case 8:
 		input_info(true, &ts->client->dev,
@@ -8400,7 +8639,7 @@ int sec_ts_run_rawdata_type(struct sec_ts_data *ts, struct sec_cmd_data *sec)
 
 	ts->tsp_dump_lock = 1;
 	input_info(true, &ts->client->dev,
-			"%s: start (wet:%d)##\n",
+			"%s: start (wet: %d)##\n",
 			__func__, ts->wet_mode);
 
 
@@ -8444,7 +8683,7 @@ int sec_ts_run_rawdata_type(struct sec_ts_data *ts, struct sec_cmd_data *sec)
 
 		if (ret < 0)
 			input_info(true, &ts->client->dev,
-					"%s: mutual %d : error ## ret:%d\n",
+					"%s: mutual %d : error ## ret: %d\n",
 					__func__, sec->cmd_param[0], ret);
 		else
 #ifdef USE_SPEC_CHECK
@@ -8491,7 +8730,7 @@ int sec_ts_run_rawdata_type(struct sec_ts_data *ts, struct sec_cmd_data *sec)
 					max, &spec_check);
 		if (ret < 0)
 			input_info(true, &ts->client->dev,
-					"%s: self %d : error ## ret:%d\n",
+					"%s: self %d : error ## ret: %d\n",
 					__func__, sec->cmd_param[0], ret);
 		else
 #ifdef USE_SPEC_CHECK
@@ -8586,11 +8825,11 @@ int sec_ts_run_rawdata_type(struct sec_ts_data *ts, struct sec_cmd_data *sec)
 
 	sec_ts_release_tmode(ts);
 out:
-	input_info(true, &ts->client->dev, "%s: ito : %02X %02X %02X %02X\n",
+	input_info(true, &ts->client->dev, "%s: ito: %02X %02X %02X %02X\n",
 			__func__, ts->ito_test[0], ts->ito_test[1]
 			, ts->ito_test[2], ts->ito_test[3]);
 
-	input_info(true, &ts->client->dev, "%s: done (wet:%d)##\n",
+	input_info(true, &ts->client->dev, "%s: done (wet: %d)##\n",
 			__func__, ts->wet_mode);
 	ts->tsp_dump_lock = 0;
 
@@ -8670,7 +8909,7 @@ void sec_ts_run_rawdata_all(struct sec_ts_data *ts, bool full_read)
 
 	ts->tsp_dump_lock = 1;
 	input_info(true, &ts->client->dev,
-			"%s: start (wet:%d)##\n",
+			"%s: start (wet: %d)##\n",
 			__func__, ts->wet_mode);
 
 	ret = sec_ts_fix_tmode(ts, TOUCH_SYSTEM_MODE_TOUCH,
@@ -8693,7 +8932,7 @@ void sec_ts_run_rawdata_all(struct sec_ts_data *ts, bool full_read)
 					&spec_check);
 		if (ret < 0)
 			input_info(true, &ts->client->dev,
-					"%s: mutual %d : error ## ret:%d\n",
+					"%s: mutual %d : error ## ret: %d\n",
 					__func__, test_type[i], ret);
 		else
 #ifdef USE_SPEC_CHECK
@@ -8712,7 +8951,7 @@ void sec_ts_run_rawdata_all(struct sec_ts_data *ts, bool full_read)
 						  max, &spec_check);
 			if (ret < 0)
 				input_info(true, &ts->client->dev,
-						"%s: self %d : error ## ret:%d\n",
+						"%s: self %d : error ## ret: %d\n",
 						__func__, test_type[i], ret);
 			else
 #ifdef USE_SPEC_CHECK
@@ -8779,11 +9018,11 @@ void sec_ts_run_rawdata_all(struct sec_ts_data *ts, bool full_read)
 
 	sec_ts_release_tmode(ts);
 out:
-	input_info(true, &ts->client->dev, "%s: ito : %02X %02X %02X %02X\n",
+	input_info(true, &ts->client->dev, "%s: ito: %02X %02X %02X %02X\n",
 			__func__, ts->ito_test[0], ts->ito_test[1]
 			, ts->ito_test[2], ts->ito_test[3]);
 
-	input_info(true, &ts->client->dev, "%s: done (wet:%d)##\n",
+	input_info(true, &ts->client->dev, "%s: done (wet: %d)##\n",
 			__func__, ts->wet_mode);
 	ts->tsp_dump_lock = 0;
 
