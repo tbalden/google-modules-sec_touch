@@ -6,7 +6,7 @@
 # unless you have coordinated with the team managing the Soong to Bazel
 # migration.
 
-load("//build/kleaf:kernel.bzl", "kernel_module")
+load("//build/kernel/kleaf:kernel.bzl", "kernel_module")
 
 kernel_module(
     name = "sec.slider",
@@ -15,17 +15,19 @@ kernel_module(
         "**/*.h",
         "Kbuild",
     ]) + [
-        "//private/google-modules/touch/common:headers",
-        "//private/google-modules/display/samsung:headers",
+        "//gs/google-modules/touch/common:headers",
+        "//gs/google-modules/display:headers",
+        "//gs/google-modules/display/include:headers",
+        "//gs/google-modules/soc-modules:gs101_soc_headers",
     ],
     outs = [
         "sec_touch.ko",
     ],
-    kernel_build = "//private/gs-google:slider",
+    kernel_build = "//gs/google-modules/soc-modules:slider",
     kernel_module_deps = [
-        "//private/google-modules/touch/common:common.slider",
+        "//gs/google-modules/touch/common:common.slider",
     ],
     visibility = [
-        "//private/gs-google:__pkg__",
+        "//gs/google-modules/soc-modules:__pkg__",
     ],
 )
