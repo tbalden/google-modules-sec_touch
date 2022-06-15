@@ -1135,6 +1135,8 @@ struct sec_ts_data {
 	ktime_t wlc_changed_ktime;
 
 	ktime_t bugreport_ktime_start;
+	ktime_t ktime_resume;
+	u64 int_cnt;
 
 	int (*sec_ts_write)(struct sec_ts_data *ts, u8 reg,
 				u8 *data, int len);

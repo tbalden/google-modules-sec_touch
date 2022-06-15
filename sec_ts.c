@@ -2851,6 +2851,7 @@ static void sec_ts_offload_set_running(struct sec_ts_data *ts, bool running)
 
 #endif /* CONFIG_TOUCHSCREEN_OFFLOAD */
 
+#define FOD_CANCEL_EVENT_DELTA_TIME 500
 static void sec_ts_handle_fod_event(struct sec_ts_data *ts,
 					struct sec_ts_event_status *p_event_status)
 {
@@ -2858,6 +2859,7 @@ static void sec_ts_handle_fod_event(struct sec_ts_data *ts,
 				(struct sec_ts_fod_event *)p_event_status;
 	int x = p_fod->x_b11_b8 << 8 | p_fod->x_b7_b0;
 	int y = p_fod->y_b11_b8 << 8 | p_fod->y_b7_b0;
+	s64 delta_ms = ktime_ms_delta(ktime_get(), ts->ktime_resume);
 
 	if (test_bit(0, &ts->tid_touch_state)) {
 		input_info(true, &ts->client->dev,
@@ -2875,6 +2877,40 @@ static void sec_ts_handle_fod_event(struct sec_ts_data *ts,
 
 	input_info(true, &ts->client->dev,
 		   "STATUS: FoD: %s, X,Y: %d, %d\n", p_fod->status ? "ON" : "OFF", x, y);
+	/*
+	 * Send input cancel event to tunr off HBM if the following conditions match:
+	 * 1. FoD status is off.
+	 * 2. FoD event is before the time of (driver reusme + FOD_CANCEL_EVENT_DELTA_TIME).
+	 */
+	if (p_fod->status == false && delta_ms < FOD_CANCEL_EVENT_DELTA_TIME) {
+		input_info(true, &ts->client->dev, "FoD: send input cancel event.\n");
+		mutex_lock(&ts->eventlock);
+		input_mt_slot(ts->input_dev, 0);
+		input_report_key(ts->input_dev, BTN_TOUCH, 1);
+		input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 1);
+		input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);
+		input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);
+		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, 140);
+		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, 140);
+		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 1);
+		input_sync(ts->input_dev);
+
+		/* Report MT_TOOL_PALM for canceling the touch event. */
+		input_mt_slot(ts->input_dev, 0);
+		input_report_key(ts->input_dev, BTN_TOUCH, 1);
+		input_mt_report_slot_state(ts->input_dev, MT_TOOL_PALM, 1);
+		input_sync(ts->input_dev);
+
+		/* Release slot 0. */
+		input_mt_slot(ts->input_dev, 0);
+		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 0);
+		input_mt_report_slot_state(ts->input_dev,
+					   MT_TOOL_FINGER, 0);
+		input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, -1);
+		input_report_key(ts->input_dev, BTN_TOUCH, 0);
+		input_sync(ts->input_dev);
+		mutex_unlock(&ts->eventlock);
+	}
 }
 
 static void sec_ts_read_vendor_event(struct sec_ts_data *ts,
@@ -3307,6 +3343,7 @@ static irqreturn_t sec_ts_isr(int irq, void *handle)
 	struct sec_ts_data *ts = (struct sec_ts_data *)handle;
 
 	ts->timestamp = ktime_get();
+	ts->int_cnt++;
 
 	return IRQ_WAKE_THREAD;
 }
@@ -5616,7 +5653,7 @@ static void sec_ts_suspend_work(struct work_struct *work)
 					      suspend_work);
 	int ret = 0;
 
-	input_info(true, &ts->client->dev, "%s\n", __func__);
+	input_info(true, &ts->client->dev, "%s: int_cnt %llu.\n", __func__, ts->int_cnt);
 	input_info(true, &ts->client->dev, "%s: encoded skipped %d/%d\n",
 		   __func__, ts->plat_data->encoded_skip_counter,
 		   ts->plat_data->encoded_frame_counter);
@@ -5673,7 +5710,8 @@ static void sec_ts_resume_work(struct work_struct *work)
 	u8 touch_mode[2] = {0};
 	int ret = 0;
 
-	input_info(true, &ts->client->dev, "%s\n", __func__);
+	input_info(true, &ts->client->dev, "%s: int_cnt %llu.\n", __func__, ts->int_cnt);
+	ts->ktime_resume = ktime_get();
 	ts->comm_err_count = 0;
 	ts->hw_reset_count = 0;
 	ts->longest_duration = 0;
