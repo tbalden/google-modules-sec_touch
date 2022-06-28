@@ -15,6 +15,10 @@ struct sec_ts_data *tsp_info;
 #include "sec_ts.h"
 #include <samsung/exynos_drm_connector.h>
 
+/* init the kfifo for health check. */
+#define SEC_TS_HC_KFIFO_LEN 4 /* must be power of 2. */
+DEFINE_KFIFO(hc_fifo, struct sec_ts_health_check, SEC_TS_HC_KFIFO_LEN);
+
 /* init the kfifo for debug used. */
 #define SEC_TS_DEBUG_KFIFO_LEN 4 /* must be power of 2. */
 DEFINE_KFIFO(debug_fifo, struct sec_ts_coordinate, SEC_TS_DEBUG_KFIFO_LEN);
@@ -1856,6 +1860,55 @@ static void sec_ts_handle_lib_status_event(struct sec_ts_data *ts,
 }
 #endif
 
+
+#ifdef SEC_TS_HC_KFIFO_LEN
+inline void sec_ts_hc_update_and_push(struct sec_ts_data *ts, struct sec_ts_health_check *hc)
+{
+	hc->int_ktime = ts->timestamp;
+	hc->int_idx = ts->int_cnt;
+	hc->coord_idx = ts->coord_event_cnt;
+	hc->status_idx = ts->status_event_cnt;
+	hc->active_bit = ts->tid_touch_state;
+
+	if (kfifo_is_full(&hc_fifo))
+		kfifo_skip(&hc_fifo);
+	kfifo_in(&hc_fifo, hc, 1);
+}
+
+inline void sec_ts_hc_dump(struct sec_ts_data *ts)
+{
+	int i;
+	s64 delta;
+	s64 sec_delta;
+	u32 ms_delta;
+	ktime_t current_time = ktime_get();
+	struct sec_ts_health_check last_hc[SEC_TS_HC_KFIFO_LEN];
+
+	kfifo_out_peek(&hc_fifo, last_hc, kfifo_size(&hc_fifo));
+	for (i = 0 ; i < ARRAY_SIZE(last_hc) ; i++) {
+		sec_delta = 0;
+		ms_delta = 0;
+		delta = ktime_ms_delta(current_time, last_hc[i].int_ktime);
+		if (delta > 0)
+			sec_delta = div_u64_rem(delta, MSEC_PER_SEC, &ms_delta);
+
+		input_info(true, &ts->client->dev,
+			"dump-int: #%llu(%llu.%u): S#%llu%s C#%llu(0x%lx)%s.\n",
+			last_hc[i].int_idx,
+			sec_delta, ms_delta,
+			last_hc[i].status_idx,
+			(last_hc[i].status_updated) ? "(+)" : "   ",
+			last_hc[i].coord_idx,
+			last_hc[i].active_bit,
+			(last_hc[i].coord_updated) ? "(+)" : ""
+			);
+	}
+}
+#else
+#define sec_ts_hc_update_and_push(ts, hc) do {} while (0)
+#define sec_ts_hc_dump(ts) do {} while (0)
+#endif /* #ifdef SEC_TS_HC_KFIFO_LEN */
+
 #ifdef SEC_TS_DEBUG_KFIFO_LEN
 inline void sec_ts_kfifo_push_coord(struct sec_ts_data *ts, u8 slot)
 {
@@ -3032,6 +3085,7 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_OFFLOAD)
 	struct touch_offload_frame *frame = NULL;
 #endif
+	struct sec_ts_health_check hc[1] = {0};
 
 	if (ts->power_status == SEC_TS_STATE_LPM) {
 
@@ -3127,6 +3181,8 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 
 		switch (event_id) {
 		case SEC_TS_STATUS_EVENT:
+			hc->status_updated = true;
+			ts->status_event_cnt++;
 			p_event_status =
 				(struct sec_ts_event_status *)event_buff;
 
@@ -3216,6 +3272,8 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 			break;
 
 		case SEC_TS_COORDINATE_EVENT:
+			hc->coord_updated = true;
+			ts->coord_event_cnt++;
 			processed_pointer_event = true;
 			mutex_lock(&ts->eventlock);
 			sec_ts_handle_coord_event(ts,
@@ -3336,6 +3394,9 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 	if (!ts->offload.offload_running)
 		update_motion_filter(ts, ts->tid_touch_state);
 #endif
+
+	/* Update the health check info. */
+	sec_ts_hc_update_and_push(ts, hc);
 }
 
 static irqreturn_t sec_ts_isr(int irq, void *handle)
@@ -5700,6 +5761,7 @@ static void sec_ts_suspend_work(struct work_struct *work)
 #endif
 	mutex_unlock(&ts->device_mutex);
 
+	sec_ts_hc_dump(ts);
 	sec_ts_debug_dump(ts);
 }
 
