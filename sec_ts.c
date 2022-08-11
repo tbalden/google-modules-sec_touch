@@ -5723,17 +5723,32 @@ static void sec_ts_suspend_work(struct work_struct *work)
 			__func__, sec_ts_ptflib_get_grip_prescreen_frames(ts));
 	}
 
-	mutex_lock(&ts->device_mutex);
-
-	reinit_completion(&ts->bus_resumed);
-
 	if (ts->power_status == SEC_TS_STATE_SUSPEND) {
 		input_err(true, &ts->client->dev, "%s: already suspended.\n",
 			  __func__);
-		mutex_unlock(&ts->device_mutex);
 		return;
 	}
 
+	mutex_lock(&ts->device_mutex);
+	/*
+	 * Do the system reset to initialize the FW to the default state
+	 * before handing over to AOC. And, recover the charger mode to
+	 * have the AFE setting as the original one.
+	 */
+	sec_ts_system_reset(ts, RESET_MODE_AUTO, true, false);
+	ret = ts->sec_ts_write(ts, SET_TS_CMD_SET_CHARGER_MODE,
+			       &ts->charger_mode, 1);
+	if (ret < 0) {
+		input_err(true, &ts->client->dev,
+			  "%s: write reg %#x %#x failed, returned %i\n",
+			__func__, SET_TS_CMD_SET_CHARGER_MODE, ts->charger_mode,
+			ret);
+	} else {
+		input_info(true, &ts->client->dev, "%s: set charger mode %#x\n",
+			__func__, ts->charger_mode);
+	}
+
+	reinit_completion(&ts->bus_resumed);
 	sec_ts_enable_fw_grip(ts, true);
 
 	/* Stop T-IC */
